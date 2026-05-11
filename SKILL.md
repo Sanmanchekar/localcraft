@@ -229,17 +229,30 @@ Seed service shape: same as init, with `depends_on: { init: { condition: service
 For each env var collected in Phase 1c, assign a value using these rules in order:
 
 1. **Framework default from a config module** (Phase 1c source 2): if the canonical config module had a literal default (`os.getenv("DEBUG", "True")`, `${PORT:8080}`, etc.), reuse it.
-2. **Value from `.env*.example`** (Phase 1c source 1): if the source line had a value, reuse it **after the safety scrub below**. Skip if the value looks like a placeholder (empty, `<...>`, `your-...`, `xxx`, `changeme`, `replace-me`, `TODO`, `FIXME`, `${...}`).
+2. **Value from `.env*.example`** (Phase 1c source 1): if the source line had a value, reuse it **after the safety scrub below**. Skip if the value matches any of these patterns (all case-insensitive):
+   - Empty / whitespace only
+   - Surrounded by angle brackets: `<...>`
+   - Surrounded by template syntax: `${...}`, `%...%`, `{{...}}`
+   - **Contains** any of these substrings: `sample`, `placeholder`, `replace`, `your-`, `your_`, `changeme`, `change_me`, `dummy`, `fake`, `example` — this catches `SG.sample_sendgrid_api_key_replace_with_actual` and similar
+   - Exact matches: `xxx`, `xxxx`, `todo`, `fixme`, `tbd`, `null`, `none`
 3. **Hint table** (first substring match against the var name wins):
 
 **Safety scrub — applied to every value from source 2 before reuse:**
 
 Treat `.env*.example` files as references for the **shape** of variables, not as safe local values. Commit accidents are common — real prod credentials sometimes end up in `.env.example`. Replace these patterns with the hint-table dev placeholder instead of copying verbatim:
 
+- **URL scheme remap** (applied first — independent of key name): if the value is a URL with a known scheme AND the host is `localhost` / `127.0.0.1` / `0.0.0.0` / a placeholder → rewrite the host to the matching docker service name. This catches `CELERY_RESULT_BACKEND=redis://localhost:6379` and similar regardless of key naming.
+  | Scheme | Replace host with | Default port |
+  |---|---|---|
+  | `redis://`, `rediss://` | `redis` | 6379 |
+  | `mysql://` | `mysql` | 3306 |
+  | `postgres://`, `postgresql://` | `postgres` | 5432 |
+  | `mongodb://`, `mongodb+srv://` | `mongodb` | 27017 |
+  | `amqp://`, `amqps://` | `rabbitmq` | 5672 |
 - **Long random-looking secrets**: value length ≥ 16 AND contains a mix of letters, digits, and at least one symbol → looks like a real secret. Replace.
-- **Real-looking hostnames**: value contains `.amazonaws.com`, `.azure.com`, `.gcp.io`, `.cloud.com`, or any FQDN with ≥ 3 dot-separated segments that isn't `localhost`/`127.0.0.1`/`0.0.0.0`/Docker-network names from this skill's samples → replace with the local mock hostname.
+- **Real-looking hostnames**: value contains `.amazonaws.com`, `.azure.com`, `.gcp.io`, `.cloud.com`, or any FQDN with ≥ 3 dot-separated segments that isn't `localhost`/`127.0.0.1`/`0.0.0.0`/a Docker-network service name from this skill's samples → replace with the local mock hostname (or for outbound third-party URLs, leave value and prepend a `# TODO: real-looking URL` comment line).
 - **Real-looking IPs**: any value matching an IPv4 pattern that isn't `127.0.0.1`, `0.0.0.0`, or a private range (10.x, 172.16–31.x, 192.168.x) → replace.
-- **Known token shapes**: `xox[bp]-...` (Slack), `sk-...` (Stripe/OpenAI), `ghp_...` (GitHub PAT), `eyJ...` (JWT), `AKIA...` (AWS access key), `arn:aws:...` (AWS ARNs) → replace with placeholder.
+- **Known token shapes**: `xox[bp]-...` (Slack), `sk-...` (Stripe/OpenAI), `ghp_...` (GitHub PAT), `eyJ...` (JWT), `AKIA...` (AWS access key), `arn:aws:...` (AWS ARNs), `SG.[A-Za-z0-9._-]+` (SendGrid) → replace with placeholder.
 
 In the printed summary (Phase 5), note how many values were scrubbed so the user is aware their `.env.example` may need a separate review.
 
