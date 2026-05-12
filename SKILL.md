@@ -171,7 +171,11 @@ Top of the merged file:
 # rerun /localcraft refresh to regenerate
 ```
 
-If `prometheus-grafana` is in the picked samples, ALSO write `.localcraft/prometheus/prometheus.yml` — see Phase 4.
+If `prometheus-grafana` is in the picked samples, ALSO write `.localcraft/prometheus/prometheus.yml` — see Phase 5.
+
+If `tempo` is in the picked samples, ALSO write `.localcraft/tempo/tempo.yaml` — see Phase 5. (Tempo bind-mounts a local config file just like prometheus does.)
+
+If `loki` is in the picked samples, no extra config file is needed — the bundled loki image runs with its built-in local-config.
 
 ## Phase 3b — Optional: migrations & seed init services
 
@@ -187,12 +191,17 @@ If the target repo has a migration tool, add an `init` service that runs migrati
 | `prisma/schema.prisma` | Prisma | `npx prisma migrate deploy` |
 | `src/main/resources/db/migration/V*.sql` | Flyway | use `flyway/flyway` image (no app build needed) |
 | `src/main/resources/db/changelog/` | Liquibase | use `liquibase/liquibase` image |
-| `migrations/*.sql` + go-migrate import in go.mod | golang-migrate | `migrate -path migrations -database $DATABASE_URL up` |
-| `knexfile.{js,ts}` or `knex/migrations/` | Knex | `npx knex migrate:latest` |
-| `node_modules/typeorm` + `ormconfig.*` or migrations dir | TypeORM | `npx typeorm migration:run` |
-| `migrations/*.sql` only (no tool detected) | raw SQL | concatenate and pipe to db client via a temp container |
+| **Go**: `migrations/*.sql` AND any of {`golang-migrate/migrate` in `go.mod`/`go.sum`, `database/migrations` package import, a `Makefile` target named `migrate`/`migrate-up`} | golang-migrate | `migrate -path migrations -database $DATABASE_URL up` |
+| **Go**: `migrations/*.sql` AND `goose` in `go.mod`/`go.sum` | goose | `goose up` |
+| **Node**: `knexfile.{js,ts}` or `knex/migrations/` OR `knex` in `package.json` deps | Knex | `npx knex migrate:latest` |
+| **Node**: `package.json` has `sequelize` dep AND `migrations/` dir OR `sequelize.config.{js,json}` | Sequelize | `npx sequelize-cli db:migrate` |
+| **Node**: `package.json` has `typeorm` dep AND (`ormconfig.*`, `typeorm.config.{ts,js}`, or `migrations/` dir) | TypeORM | `npx typeorm migration:run -d <data-source-path>` |
+| **Node**: `package.json` has `mikro-orm` dep AND `migrations/` dir | MikroORM | `npx mikro-orm migration:up` |
+| `migrations/*.sql` only (no tool detected after the above) | raw SQL | concatenate and pipe to db client via a temp container |
 
-If no tool is detected, skip this phase. **Never guess.**
+**Migrations-dir without a recognized tool**: if `migrations/` (or `db/migrate/`) exists but **none** of the above detect a tool, note this explicitly in the Phase 5 summary as a `MIGRATION_DETECTION_GAP` rather than silently skipping. The skill should print: `"migrations/ dir found but no migration tool detected (looked for: alembic, django, rails, prisma, flyway, liquibase, golang-migrate, goose, knex, sequelize, typeorm, mikro-orm). Specify manually if you have a custom runner."`
+
+If no tool AND no migrations dir is detected, skip this phase silently. **Never guess.**
 
 ### Init service shape (requires `Dockerfile` at the repo root)
 
@@ -256,10 +265,22 @@ Treat `.env*.example` files as references for the **shape** of variables, not as
   | `postgres://`, `postgresql://` | `postgres` | 5432 |
   | `mongodb://`, `mongodb+srv://` | `mongodb` | 27017 |
   | `amqp://`, `amqps://` | `rabbitmq` | 5672 |
-- **Long random-looking secrets**: value length ≥ 16 AND contains a mix of letters, digits, and at least one symbol → looks like a real secret. Replace.
-- **Real-looking hostnames**: value contains `.amazonaws.com`, `.azure.com`, `.gcp.io`, `.cloud.com`, or any FQDN with ≥ 3 dot-separated segments that isn't `localhost`/`127.0.0.1`/`0.0.0.0`/a Docker-network service name from this skill's samples → replace with the local mock hostname (or for outbound third-party URLs, leave value and prepend a `# TODO: real-looking URL` comment line).
+- **Bare `host:port` broker endpoints** (no scheme — applied second): values matching `<hostname>:<port>` where the port is a well-known service port → remap host to the matching docker service name. Catches `KAFKA_BROKER=kafka.graydev.infra:9092` and `ELASTICSEARCH_HOST=es.internal:9200` patterns. Port-to-service map:
+  | Port | Replace host with |
+  |---|---|
+  | 9092 | `kafka` |
+  | 9200 | `elasticsearch` |
+  | 27017 | `mongodb` |
+  | 6379 | `redis` |
+  | 3306 | `mysql` |
+  | 5432 | `postgres` |
+  | 5672 | `rabbitmq` |
+- **Real-looking hostnames** (applied third — DROP the `://` requirement): if the value contains `.amazonaws.com`, `.azure.com`, `.gcp.io`, `.cloud.com`, `.internal`, or any FQDN with ≥ 3 dot-separated segments (and isn't `localhost` / `127.0.0.1` / `0.0.0.0` / a Docker-network service name from this skill's samples) → replace with the matching local mock hostname based on key name (`*_HOST` ending → `mysql`/`postgres`/`mongodb` per detected DB; `*_URL` ending → `http://localhost`). For outbound third-party URLs (`https://...`) where no local mock applies, leave value and prepend a `# TODO: real-looking URL` comment line.
+- **Long random-looking secrets** (catches the common case of committed real passwords): value length ≥ 16 AND **(a)** contains a mix of letters + digits + at least one symbol, OR **(b)** is 32/40/64 hex characters (HMAC-shaped signing secrets, SHA-1/SHA-256 digests), OR **(c)** is 24+ char base64 (`[A-Za-z0-9+/=]{24,}`). Replace with `dev-<keyname-lower>`.
 - **Real-looking IPs**: any value matching an IPv4 pattern that isn't `127.0.0.1`, `0.0.0.0`, or a private range (10.x, 172.16–31.x, 192.168.x) → replace.
-- **Known token shapes**: `xox[bp]-...` (Slack), `sk-...` (Stripe/OpenAI), `ghp_...` (GitHub PAT), `eyJ...` (JWT), `AKIA...` (AWS access key), `arn:aws:...` (AWS ARNs), `SG.[A-Za-z0-9._-]+` (SendGrid) → replace with placeholder.
+- **Known token shapes**: `xox[bp]-...` (Slack bot/user token), `xoxs-...` (Slack signing), `sk-...` (Stripe/OpenAI), `ghp_...` (GitHub PAT), `eyJ...` (JWT), `AKIA...` / `ASIA...` (AWS access keys), `arn:aws:...` (AWS ARNs), `SG\.[A-Za-z0-9._-]+` (SendGrid), `rzp_(live|test)_...` (Razorpay), `whsec_...` (Stripe webhook), `pk_(live|test)_...` (publishable Stripe keys) → replace with placeholder.
+
+**Detection order matters**: apply URL scheme remap → bare host:port remap → real-FQDN scrub → token shapes → long-random-secret → IP scrub. First match wins per value. If none match, keep as-is.
 
 In the printed summary (Phase 5), note how many values were scrubbed so the user is aware their `.env.example` may need a separate review.
 
