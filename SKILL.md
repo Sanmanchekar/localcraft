@@ -1,6 +1,6 @@
 ---
 name: localcraft
-description: Generate a complete local dev setup (docker-compose.local.yml + .env.local + mocked external deps) for the current repo. Detects the stack — language, framework, databases, caches, queues, cloud SDKs, metrics, env vars — by scanning manifests (package.json, requirements.txt, go.mod, pom.xml, Gemfile, Cargo.toml, *.csproj, build.gradle, composer.json, mix.exs), Dockerfile, helm/, k8s/, and source code. Stitches matching sample compose snippets from the bundled samples/ library into one working setup, generates .env.local with sample-secret values, and prints the docker compose command to start everything. Use when the user types /localcraft, asks to "set up local dev", "spin up dependencies", "mock the database/redis/aws", "make this repo runnable locally", "bootstrap this repo", or wants metrics/grafana mocked.
+description: Generate a complete local dev setup (Dockerfile.dev + docker-compose.dev.yml + .env.dev + Makefile.dev + mocked external deps; optionally an EKS/Helm package via the `eks` keyword) for the current repo. Detects the stack — language, framework, databases, caches, queues, cloud SDKs, metrics/logs/traces, env vars — by scanning manifests, framework config modules, source code, Dockerfile, helm/, k8s/. Stitches matching sample compose snippets from the bundled samples/ library, generates a Makefile.dev with `up`/`down`/`logs`/`migrate`/`seed`/`shell` targets, scrubs real-looking secrets from .env*.example before reuse in .env.dev, and prints one command to start everything. Use when the user types /localcraft, asks to "set up local dev", "spin up dependencies", "mock the database/redis/aws", "make this repo runnable locally", "bootstrap this repo", wants metrics/grafana/loki/tempo mocked, or wants a k3s/EKS/helm deployment of the dev stack (says "eks", "k8s", "rancher", "helm").
 ---
 
 # localcraft
@@ -15,7 +15,8 @@ Default action: full **init** flow (Phase 1 → 5 below).
 If the user message contains:
 - `detect`, `what stack`, `analyze` → run **Phase 1 only**, print the stack JSON, do NOT write files
 - `refresh`, `regenerate`, `redo`, `force` → run init, **overwrite** any existing `.localcraft/`
-- `add metrics`, `add grafana` → load existing `.localcraft/docker-compose.local.yml`, add the prometheus-grafana sample, write back
+- `add metrics`, `add grafana` → load existing `.localcraft/docker-compose.dev.yml`, add the prometheus-grafana sample, write back
+- `eks`, `k8s`, `kubernetes`, `rancher`, `helm` → run init (Phases 1–5) AND **Phase 6** (EKS/Helm mode below) to also emit a k3s/EKS-style deployment package under `.localcraft/k8s/`
 
 ## Phase 1 — Detect
 
@@ -53,10 +54,14 @@ A repo can register multiple services across multiple languages — just collect
 | **rabbitmq** | pika, aio-pika | amqplib | streadway/amqp | amqp-client | bunny | lapin | RabbitMQ.Client |
 | **aws** | boto3, aiobotocore | aws-sdk, @aws-sdk/* | aws-sdk-go, aws-sdk-go-v2 | software.amazon.awssdk, aws-java-sdk | aws-sdk | aws-sdk-rust | AWSSDK.* |
 | **metrics** (prometheus) | prometheus_client, prometheus-flask-exporter | prom-client | prometheus/client_golang | micrometer-registry-prometheus | prometheus-client | prometheus | prometheus-net |
+| **logs** (loki) | python-logging-loki, logging-loki | pino-loki, winston-loki | grafana/loki-client-go | loki-logback-appender | loki-logger | tracing-loki | NLog.Targets.Loki |
+| **traces** (tempo / otlp) | opentelemetry-exporter-otlp, opentelemetry-instrumentation | @opentelemetry/exporter-trace-otlp-* | go.opentelemetry.io/otel/exporters/otlp | io.opentelemetry:opentelemetry-exporter-otlp | opentelemetry-exporter-otlp | opentelemetry-otlp | OpenTelemetry.Exporter.OpenTelemetryProtocol |
 
 **Auto-include rules**:
 - If `aws` detected → include the `localstack` sample
 - If `metrics` detected → include the `prometheus-grafana` sample
+- If `logs` detected → include the `loki` sample (auto-add Grafana too if not already from metrics)
+- If `traces` detected → include the `tempo` sample
 - If any framework that typically sends email is detected (django, rails, laravel, spring) → include the `mailhog` sample
 
 ### 1c. Env vars — repo-driven discovery (no hardcoded conventions)
@@ -145,6 +150,8 @@ The samples library is at the skill's own directory: `~/.claude/skills/localcraf
 | rabbitmq | `rabbitmq.yml` |
 | aws | `localstack.yml` |
 | metrics | `prometheus-grafana.yml` |
+| logs | `loki.yml` (+ Grafana from prometheus-grafana sample if not already picked) |
+| traces | `tempo.yml` (writes `.localcraft/tempo/tempo.yaml` config file like prometheus does) |
 | (auto, conditions in 1b) | `mailhog.yml` |
 
 **User overrides**: for any service `S`, if `samples/compose/S.user.yml` exists, **use that instead** of `S.yml`. This is how the user customizes for their org's conventions (e.g., a postgres image with their seed scripts baked in).
@@ -196,7 +203,7 @@ services:
       context: ..
       dockerfile: Dockerfile
     command: ["alembic", "upgrade", "head"]    # ← from the detection table
-    env_file: .env.local
+    env_file: .env.dev
     depends_on:
       <db-service>:
         condition: service_healthy
@@ -224,7 +231,7 @@ Seed service shape: same as init, with `depends_on: { init: { condition: service
 - `restart: "no"` is mandatory (init runs once per `up`)
 - Never include destructive migration commands: no `db:reset`, no `migrate:fresh`, no `db:drop`. The skill only adds forward-migrate commands
 
-## Phase 4 — Generate `.env.local`
+## Phase 4 — Generate `.env.dev`
 
 For each env var collected in Phase 1c, assign a value using these rules in order:
 
@@ -303,7 +310,7 @@ Hint table (first substring match against the var name wins):
 | `DJANGO_SETTINGS_MODULE` | leave value empty with comment `# TODO: set explicitly` |
 | (no match) | `dev-{varname-lowercase}` |
 
-Top of `.env.local`:
+Top of `.env.dev`:
 ```
 # generated by localcraft — sample-only secrets, NOT for production
 # rotate any value before sharing this file outside your machine
@@ -311,48 +318,443 @@ Top of `.env.local`:
 
 ## Phase 5 — Write & print
 
+**Naming convention**: every output file uses a `.dev` suffix and lives under `<repo>/.localcraft/`. The skill **never** writes to the repo root and **never** modifies existing files (only appends one line to `.gitignore`). This way the developer's existing `Dockerfile`, `docker-compose.yml`, `Makefile`, etc. are untouched and the dev-only files clearly self-identify.
+
 Output dir: `<repo>/.localcraft/` (create with `mkdir -p`).
 
-Files to write:
-- `.localcraft/docker-compose.local.yml` — merged compose
-- `.localcraft/.env.local` — env vars with sample values
-- `.localcraft/README.md` — one-page run instructions (services, ports, mock notes)
-- `.localcraft/prometheus/prometheus.yml` — only if metrics included; content:
-  ```yaml
-  global:
-    scrape_interval: 15s
-  scrape_configs:
-    - job_name: app
-      static_configs:
-        - targets: ['host.docker.internal:8000']  # adjust to your app's port
-  ```
+Files to write (compose mode — EKS mode adds more, see Phase 6):
 
-**Existing-file check**: if any of these files already exist and the user did NOT use a refresh keyword, ask once: `"`.localcraft/` already exists. Overwrite? [y/N]"`. If they say no, abort cleanly.
+| File | When | Content |
+|---|---|---|
+| `.localcraft/docker-compose.dev.yml` | always | merged compose from Phase 3 |
+| `.localcraft/.env.dev` | always | env vars from Phase 4 |
+| `.localcraft/Dockerfile.dev` | only if target repo has **no** `Dockerfile` at root AND a buildable stack was detected | per-stack multi-stage Dockerfile, see "Dockerfile.dev generation" below |
+| `.localcraft/Makefile.dev` | always | runnable targets, see "Makefile.dev generation" below |
+| `.localcraft/README.dev.md` | always | quickstart + manual-command reference |
+| `.localcraft/prometheus/prometheus.yml` | only if metrics sample picked | scrape config (default `host.docker.internal:8000`) |
+| `.localcraft/tempo/tempo.yaml` | only if traces sample picked | minimal Tempo config (OTLP receiver on 4317/4318, local storage) |
 
-**.gitignore guard**: read the repo's `.gitignore`. If it does not already cover `.env.local` or `.localcraft/`, append:
+### Dockerfile.dev generation
+
+Generate only if the target repo does NOT already have a `Dockerfile` at root. **Auto-discover the runtime version from multiple signals** — do NOT rely only on the manifest:
+
+| Stack | Version-detection chain (first match wins) | Fallback |
+|---|---|---|
+| Python | `.python-version` → `runtime.txt` → `pyproject.toml` `[project] requires-python` → `pyproject.toml` `[tool.poetry.dependencies] python` → `Pipfile` `[requires] python_version` → `setup.py` `python_requires=` → `setup.cfg` `python_requires` | `3.11` |
+| Node / TS | `.nvmrc` → `package.json` `engines.node` → `Dockerfile`-style FROM hints in CI config | `20` |
+| Go | `go.mod` `go <version>` directive → `go.mod` `toolchain go<version>` → `.go-version` | `1.22` |
+| Java / Kotlin | `pom.xml` `<maven.compiler.source>` → `pom.xml` `<java.version>` → `build.gradle` `sourceCompatibility` → `.java-version` | `21` |
+| Ruby | `.ruby-version` → `Gemfile` `ruby '...'` | `3.3` |
+| Rust | `rust-toolchain.toml` → `Cargo.toml` `rust-version` | `1.78` |
+| .NET | `global.json` `sdk.version` → `<TargetFramework>` in `.csproj` | `8.0` |
+| PHP | `composer.json` `require.php` | `8.3` |
+| Elixir | `.tool-versions` → `mix.exs` `elixir:` | `1.16` |
+
+Each Dockerfile.dev is **multi-stage** with a `builder` and `runtime` stage. Templates per stack (substitute `{VERSION}` from detection):
+
+```dockerfile
+# Python (Django/Flask/FastAPI/generic)
+FROM python:{VERSION}-slim AS builder
+WORKDIR /app
+COPY requirements*.txt pyproject.toml* poetry.lock* Pipfile* ./
+RUN pip install --no-cache-dir --user -r requirements.txt 2>/dev/null \
+ || pip install --no-cache-dir --user .
+
+FROM python:{VERSION}-slim
+WORKDIR /app
+COPY --from=builder /root/.local /root/.local
+ENV PATH=/root/.local/bin:$PATH PYTHONUNBUFFERED=1
+COPY . .
+EXPOSE {DETECTED_PORT_OR_8000}
+CMD ["{DETECTED_CMD}"]
+```
+
+`{DETECTED_CMD}` rules:
+- Django (`manage.py` + django in deps) → `python manage.py runserver 0.0.0.0:8000`
+- FastAPI (uvicorn/hypercorn in deps + `main.py` or `app.py`) → `uvicorn main:app --host 0.0.0.0 --port 8000 --reload`
+- Flask (`flask` in deps + `app.py`) → `flask --app app run --host 0.0.0.0 --port 5000`
+- Celery worker (no web framework, just celery) → `celery -A <module> worker --loglevel=info`
+- Generic Python → `python -m <package>` if `__main__` exists, else `python main.py`
+
+```dockerfile
+# Node / TS (Express/Nest/Next/etc.)
+FROM node:{VERSION}-alpine AS builder
+WORKDIR /app
+COPY package*.json yarn.lock* pnpm-lock.yaml* ./
+RUN npm ci 2>/dev/null || yarn install --frozen-lockfile 2>/dev/null || pnpm install --frozen-lockfile
+COPY . .
+RUN npm run build 2>/dev/null || true
+
+FROM node:{VERSION}-alpine
+WORKDIR /app
+COPY --from=builder /app .
+ENV NODE_ENV=development
+EXPOSE {DETECTED_PORT_OR_3000}
+CMD ["{DETECTED_CMD}"]
+```
+
+`{DETECTED_CMD}`: read `package.json.scripts.dev` → `scripts.start` → fallback `node index.js`.
+
+```dockerfile
+# Go
+FROM golang:{VERSION}-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/app {DETECTED_ENTRYPOINT}
+
+FROM alpine:latest
+RUN apk add --no-cache ca-certificates
+WORKDIR /app
+COPY --from=builder /out/app .
+EXPOSE {DETECTED_PORT_OR_8080}
+CMD ["./app"]
+```
+
+`{DETECTED_ENTRYPOINT}` chain: `./cmd/<repo-name>` → `./cmd/server` → `./cmd/main` → `.`
+
+```dockerfile
+# Java (Spring Boot via Maven or Gradle)
+FROM eclipse-temurin:{VERSION}-jdk AS builder
+WORKDIR /app
+COPY pom.xml* gradlew* build.gradle* settings.gradle* ./
+COPY .mvn .mvn 2>/dev/null || true
+COPY gradle gradle 2>/dev/null || true
+RUN ([ -f pom.xml ] && ./mvnw -B dependency:go-offline) || ([ -f build.gradle ] && ./gradlew --no-daemon dependencies)
+COPY . .
+RUN ([ -f pom.xml ] && ./mvnw -B -DskipTests package) || ./gradlew --no-daemon -x test bootJar
+
+FROM eclipse-temurin:{VERSION}-jre
+WORKDIR /app
+COPY --from=builder /app/target/*.jar /app/build/libs/*.jar app.jar
+EXPOSE 8080
+CMD ["java", "-jar", "app.jar"]
+```
+
+Skip Dockerfile.dev generation for: Ruby, Rust, .NET, PHP, Elixir in v0.3 — print a note in the summary that auto-Dockerfile isn't yet supported for those stacks. Add them in later versions.
+
+### Makefile.dev generation
+
+Always generate. Variables and targets adapt to detected services. Use this skeleton — substitute `{...}` per detection:
+
+```makefile
+# Generated by /localcraft — edit if you want changes to persist across refresh runs.
+# Run from .localcraft/ : `make -f Makefile.dev up` (or from repo root with `-C .localcraft`).
+
+COMPOSE       := docker compose -f docker-compose.dev.yml --env-file .env.dev
+APP_SERVICE   := {APP_SERVICE_OR_EMPTY}
+
+.PHONY: up down logs ps restart clean reset help \
+        {DB_SHELL_TARGETS} {APP_TARGETS} {MIGRATION_TARGETS}
+
+help:           ## show this help
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
+
+up:             ## bring all containers up
+	$(COMPOSE) up -d
+	@echo ""
+	@echo "Services:"
+	@$(COMPOSE) ps --format "  {{.Name}}\t{{.Status}}\t{{.Ports}}"
+
+down:           ## stop all containers (keeps volumes)
+	$(COMPOSE) down
+
+logs:           ## follow logs from all services
+	$(COMPOSE) logs -f --tail=100
+
+ps:             ## list running services
+	$(COMPOSE) ps
+
+restart:        ## restart all services
+	$(COMPOSE) restart
+
+clean:          ## stop containers and remove volumes
+	$(COMPOSE) down -v
+
+reset: clean up ## clean + up (full reset)
+```
+
+Add per-detected-service shell targets. Examples:
+```makefile
+mysql-shell:    ## open mysql client
+	$(COMPOSE) exec mysql mysql -u localcraft -plocalcraft localcraft
+
+psql-shell:     ## open psql client
+	$(COMPOSE) exec postgres psql -U localcraft -d localcraft
+
+mongo-shell:    ## open mongosh
+	$(COMPOSE) exec mongodb mongosh
+
+redis-cli:      ## open redis-cli
+	$(COMPOSE) exec redis redis-cli
+```
+
+Add migration / seed targets if Phase 3b detected them:
+```makefile
+migrate:        ## run migrations against the dev DB
+	{MIGRATION_COMMAND}
+
+seed:           ## load seed data
+	{SEED_COMMAND}
+```
+
+If `Dockerfile.dev` was generated, add:
+```makefile
+build-app:      ## build the app image from Dockerfile.dev
+	docker build -t {REPO_NAME}-dev -f Dockerfile.dev ..
+
+shell:          ## shell into the app container
+	$(COMPOSE) exec $(APP_SERVICE) sh
+```
+
+### README.dev.md generation
+
+Single page with these sections (write all of them):
+
+1. **TL;DR** — one block:
+   ```
+   make -f Makefile.dev up    # or: cd .localcraft && docker compose -f docker-compose.dev.yml --env-file .env.dev up
+   ```
+2. **Stack detected** — bullets: languages, frameworks, services, env-var count
+3. **Services & ports** — table of every container with its localhost port and credentials (e.g., `mysql · localhost:3306 · localcraft/localcraft/localcraft`)
+4. **Common make targets** — list every target from Makefile.dev with one-line descriptions
+5. **Manual command reference** (for users who want to run things step-by-step instead of via make):
+   - Start one service: `docker compose -f docker-compose.dev.yml up -d <service>`
+   - Connect to MySQL/Postgres/Mongo/Redis (full command lines per service)
+   - Run migrations manually (the detected command)
+   - Seed manually (the detected command)
+   - Tail logs from one service
+   - Tear down completely
+6. **Troubleshooting** — short list: port conflicts, container OOM, healthcheck stuck, how to nuke volumes
+7. **What was scrubbed** — count of scrubbed values + note to review `.env.dev` before sharing
+8. **Refresh** — how to regenerate (`/localcraft refresh`) and what survives (user samples in `samples/*.user.yml`)
+
+### Existing-file check
+
+If `.localcraft/` already exists AND the user did NOT say `refresh`/`regenerate`/`force`, prompt once:
+```
+.localcraft/ already exists. Overwrite? [y/N]
+```
+`y` → overwrite all files. `n` or empty → abort cleanly without writing anything.
+
+### .gitignore guard
+
+Read the repo's `.gitignore`. If it does not already cover `.localcraft/`, append:
 ```
 # localcraft
 .localcraft/
 ```
-to the end. (Sample secrets are still secrets-shaped — never let them get committed.)
+(Sample secrets in `.env.dev` are still secret-shaped — never let them get committed.)
 
-Final printed summary (this exact shape):
+### Final printed summary
 
 ```
 ✓ localcraft setup written to .localcraft/
 
 Stack:    <languages joined with " · "> · <frameworks joined with ", ">
 Services: <services joined with ", ">
-Env vars: <count> (filled with sample values; review .env.local before sharing)
+Env vars: <count> (<N> scrubbed for safety, <M> kept-with-TODO)
+Dockerfile.dev: <generated|skipped: repo has its own Dockerfile|skipped: unsupported stack>
+Migrations: <init service added|manual: "<command>"|none detected>
 
 Run:
-  cd .localcraft && docker compose -f docker-compose.local.yml --env-file .env.local up
+  make -f .localcraft/Makefile.dev up
+
+Or step-by-step:
+  cd .localcraft && docker compose -f docker-compose.dev.yml --env-file .env.dev up
 
 Other commands:
   /localcraft detect        — print stack only, no files written
   /localcraft refresh       — regenerate everything
-  /localcraft add metrics   — add prometheus + grafana to an existing setup
+  /localcraft add metrics   — add prometheus + grafana to existing setup
+  /localcraft eks           — also generate EKS/Helm dev deployment (Phase 6)
 ```
+
+## Phase 6 — EKS / Helm mode (runs only when triggered)
+
+Activate when the user message contains any of: `eks`, `k8s`, `kubernetes`, `rancher`, `helm`. Generates a Kubernetes/Helm deployment package under `.localcraft/k8s/` that mirrors the production EKS shape but runs against a local Kubernetes cluster (Rancher Desktop's k3s, kind, minikube, or any kubectl-reachable cluster).
+
+This phase runs **in addition to** Phases 1–5 (compose mode is still generated — the user can run either or both).
+
+### 6a. Locate the helm chart
+
+The repo may not have `helm/` on the currently checked-out branch. Try in order:
+
+1. **Local `helm/` or `charts/` dir** in the current branch's working tree
+2. **Origin `feature/helm` branch** — fetch tree via `gh api repos/<owner>/<repo>/git/trees/feature/helm?recursive=1`
+3. **Origin `helm/production` branch** — same via `gh api .../tree/helm/production?recursive=1`
+4. **None found** → print a note in the summary that EKS mode needs a helm chart somewhere; do NOT fabricate one. Skip the rest of Phase 6.
+
+When found via a remote branch, download just the `helm/` subtree (or `charts/`) into `.localcraft/k8s/chart/` via `gh api repos/.../tarball/<branch>` + `tar -xz --strip-components=1 --wildcards '*/helm/*' '*/helm'`.
+
+### 6b. Generate `values.dev.yaml` — override production assumptions
+
+Read the chart's `values.yaml` to learn what knobs exist. Then write `.localcraft/k8s/values.dev.yaml` that overrides production-only settings. Use **only keys that exist in the chart's values.yaml** — do not invent. Common overrides (set each ONLY if the key is present in the upstream values.yaml):
+
+```yaml
+# .localcraft/k8s/values.dev.yaml — generated by /localcraft eks
+# overrides ./chart/values.yaml for local k3s / rancher-desktop
+
+replicaCount: 1
+
+image:
+  repository: localhost:5000/{REPO_NAME}-dev   # or registry.localhost depending on rancher config
+  tag: dev
+  pullPolicy: IfNotPresent
+
+resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits:   { cpu: 500m, memory: 512Mi }
+
+# disable production-only machinery for local
+externalSecrets:
+  enabled: false
+serviceMonitor:
+  enabled: false
+podDisruptionBudget:
+  enabled: false
+autoscaling:
+  enabled: false
+ingress:
+  enabled: false
+
+# point at in-cluster mock services (installed via dep-charts.dev.sh)
+# the actual env-var names come from .env.dev (see secret.dev.yaml)
+configmap:
+  enabled: true
+```
+
+For each override key, check the upstream `values.yaml` first via `Read` — if the key path doesn't exist, **don't include it** (Helm will error on unused values in strict mode). Note in the file's top comment which overrides were skipped because the upstream chart doesn't expose that knob.
+
+### 6c. Generate `secret.dev.yaml` and `configmap.dev.yaml` from `.env.dev`
+
+The production chart uses `envFrom: secretRef:` with the secret name populated by External Secrets Operator. In dev mode that's replaced by a hand-built Secret. Generate:
+
+```yaml
+# .localcraft/k8s/secret.dev.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {REPO_NAME}-secret      # match the name the chart's Deployment expects
+  namespace: {DETECTED_NAMESPACE_OR_default}
+type: Opaque
+stringData:
+  KEY1: "value1"                # populated from .env.dev (already scrubbed by Phase 4)
+  KEY2: "value2"
+  ...
+```
+
+Split keys: anything that **looks like a secret** (matched any safety-scrub rule from Phase 4, or contains `PASSWORD`/`SECRET`/`KEY`/`TOKEN` in the name) → `secret.dev.yaml`. Everything else → `configmap.dev.yaml` with the same structure (`kind: ConfigMap`, `data:` instead of `stringData:`). The chart's Deployment usually does `envFrom: [{ configMapRef: ... }, { secretRef: ... }]` — both must exist for `envFrom` to resolve.
+
+### 6d. Generate `dep-charts.dev.sh` — install mock dependencies into k8s
+
+For each detected service in Phase 1b, install the matching public Helm chart (Bitnami is the de facto standard). Generate a shell script the user runs once:
+
+```bash
+#!/bin/bash
+# .localcraft/k8s/dep-charts.dev.sh — install mock dependencies into the current kube context
+set -euo pipefail
+NS=localcraft-dev
+kubectl create namespace $NS --dry-run=client -o yaml | kubectl apply -f -
+
+helm repo add bitnami https://charts.bitnami.com/bitnami --force-update
+helm repo add localstack https://localstack.github.io/helm-charts --force-update
+helm repo add grafana https://grafana.github.io/helm-charts --force-update
+helm repo update
+
+# only the helm install lines for services actually detected — see Phase 1b
+helm upgrade --install mysql    bitnami/mysql    -n $NS \
+  --set auth.rootPassword=localcraft --set auth.database=localcraft \
+  --set auth.username=localcraft --set auth.password=localcraft \
+  --set primary.persistence.enabled=false --wait
+
+helm upgrade --install redis    bitnami/redis    -n $NS \
+  --set auth.enabled=false --set master.persistence.enabled=false --wait
+
+helm upgrade --install mongodb  bitnami/mongodb  -n $NS \
+  --set auth.rootUser=localcraft --set auth.rootPassword=localcraft \
+  --set persistence.enabled=false --wait
+
+helm upgrade --install localstack localstack/localstack -n $NS \
+  --set services="s3,sqs,sns,secretsmanager,dynamodb,kms" --wait
+
+# kube-prometheus-stack covers prometheus + grafana + (optionally) loki + tempo via separate charts
+# include only when metrics/logs/traces were detected
+```
+
+The script is template — write only the `helm upgrade --install` lines for services that Phase 1b actually detected. Don't install kafka/rabbitmq/elasticsearch helm charts blindly; only when detected. For Kafka, prefer `bitnami/kafka` in KRaft mode. For Loki/Tempo, use `grafana/loki` and `grafana/tempo` (or `grafana/loki-stack` which bundles them).
+
+Apply order in dep-charts.dev.sh: stateful infra first (mysql/postgres/mongo), then queues (kafka/rabbitmq), then mocks (localstack/mailhog), then observability (prometheus/grafana/loki/tempo). All with `--wait`.
+
+### 6e. Generate `.localcraft/k8s/Makefile.dev` for k8s ops
+
+```makefile
+NS := localcraft-dev
+APP := {REPO_NAME}
+
+.PHONY: k8s-up k8s-down deps app port-forward logs helm-template clean help
+
+help:
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS=":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
+
+deps:           ## install mock dep charts into the cluster
+	bash dep-charts.dev.sh
+
+app: configmap secret  ## install the app helm chart with values.dev.yaml
+	helm upgrade --install $(APP) ./chart -n $(NS) -f values.dev.yaml --wait
+
+configmap:      ## apply the dev configmap
+	kubectl apply -n $(NS) -f configmap.dev.yaml
+
+secret:         ## apply the dev secret
+	kubectl apply -n $(NS) -f secret.dev.yaml
+
+k8s-up: deps app  ## bring up dependencies + app
+
+k8s-down:       ## remove the app release (deps stay)
+	helm uninstall $(APP) -n $(NS) || true
+	kubectl delete -n $(NS) -f configmap.dev.yaml -f secret.dev.yaml --ignore-not-found
+
+port-forward:   ## forward the app service to localhost:8000
+	kubectl port-forward -n $(NS) svc/$(APP) 8000:{DETECTED_SERVICE_PORT}
+
+logs:           ## tail app logs
+	kubectl logs -n $(NS) -l app.kubernetes.io/name=$(APP) -f --tail=100
+
+helm-template:  ## render the chart locally for inspection (no apply)
+	helm template $(APP) ./chart -f values.dev.yaml
+
+clean:          ## remove the entire namespace (deps + app + everything)
+	kubectl delete namespace $(NS) --ignore-not-found
+```
+
+### 6f. Final EKS-mode print
+
+After running, the summary appended to Phase 5's output should also include:
+
+```
+EKS/Helm package written to .localcraft/k8s/
+  chart/                  # copy of the repo's helm chart (from <branch-source>)
+  values.dev.yaml         # local-friendly overrides
+  configmap.dev.yaml      # non-secret keys from .env.dev
+  secret.dev.yaml         # secret-shaped keys from .env.dev
+  dep-charts.dev.sh       # one-time mock-dep installer
+  Makefile.dev            # `make -f .localcraft/k8s/Makefile.dev k8s-up` to bring everything up
+
+Quickstart for k3s / rancher-desktop:
+  make -f .localcraft/k8s/Makefile.dev k8s-up        # full bring-up (deps + app)
+  make -f .localcraft/k8s/Makefile.dev port-forward  # in another shell
+  curl http://localhost:8000/                        # smoke test
+```
+
+### 6g. Hard rules for EKS mode
+
+- Read the chart's `values.yaml` **before** writing `values.dev.yaml` — only override keys that exist upstream
+- Never modify the original chart in `.localcraft/k8s/chart/` — overrides go in `values.dev.yaml`
+- Don't `helm install` from the skill — only generate the script and `make` targets
+- Don't push images, don't change kube context, don't apply manifests on the user's behalf
+- The skill requires the user's active kube context to be a local cluster (k3s / kind / minikube / docker-desktop). Don't run against a real EKS — print a refusal if the context name matches `^arn:aws:eks:` or contains `prod`/`production`/`stage`/`staging`
 
 ## Hard rules
 
@@ -360,7 +762,8 @@ Other commands:
 2. **Never invent service ports.** Use the ports from the sample compose files exactly as written.
 3. **User samples beat defaults.** Always check for `<service>.user.yml` first.
 4. **Never modify the repo's existing files** — except appending to `.gitignore` (see Phase 5). No edits to `Dockerfile`, `helm/`, `k8s/`, `.env`, source code, anything else.
-5. **Never run `docker compose up` yourself.** Print the command. The user runs it.
-6. **`.env.local` is secret-shaped.** Always confirm `.gitignore` covers it before writing.
+5. **Never run `docker compose up` or `helm install` yourself.** Print the command. The user runs it.
+6. **`.env.dev` is secret-shaped.** Always confirm `.gitignore` covers `.localcraft/` before writing.
 7. **One sample = one service.** When adding new samples to the library, do not bundle multiple services. Merge logic depends on this.
 8. **Detect mode never writes files.** If the user says "detect", "what stack", or "analyze", print JSON and stop — even if `.localcraft/` does not exist.
+9. **EKS mode never targets real clusters.** Refuse if the active kube context name suggests a real environment (contains `prod`, `production`, `staging`, `stage`, or matches an `arn:aws:eks:` pattern).
