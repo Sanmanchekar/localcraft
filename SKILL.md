@@ -685,20 +685,27 @@ helm repo add grafana https://grafana.github.io/helm-charts --force-update
 helm repo update
 
 # only the helm install lines for services actually detected — see Phase 1b
+# NOTE: no --wait flag here. helm returns as soon as manifests are applied;
+# the separate `wait-deps` target in Makefile.dev polls pod readiness.
+# (Rationale: Bitnami charts on first install can take 6-10 min for image
+# pull + initdb on slow networks. helm's default 5-min --wait timeout
+# fires too aggressively; failing the whole script when resources are
+# actually fine. Splitting install from wait makes failures unambiguous
+# and lets the wait step have its own generous timeout.)
 helm upgrade --install mysql    bitnami/mysql    -n $NS \
   --set auth.rootPassword=localcraft --set auth.database=localcraft \
   --set auth.username=localcraft --set auth.password=localcraft \
-  --set primary.persistence.enabled=false --wait
+  --set primary.persistence.enabled=false
 
 helm upgrade --install redis    bitnami/redis    -n $NS \
-  --set auth.enabled=false --set master.persistence.enabled=false --wait
+  --set auth.enabled=false --set master.persistence.enabled=false
 
 helm upgrade --install mongodb  bitnami/mongodb  -n $NS \
   --set auth.rootUser=localcraft --set auth.rootPassword=localcraft \
-  --set persistence.enabled=false --wait
+  --set persistence.enabled=false
 
 helm upgrade --install localstack localstack/localstack -n $NS \
-  --set services="s3,sqs,sns,secretsmanager,dynamodb,kms" --wait
+  --set services="s3,sqs,sns,secretsmanager,dynamodb,kms"
 
 # kube-prometheus-stack covers prometheus + grafana + (optionally) loki + tempo via separate charts
 # include only when metrics/logs/traces were detected
@@ -706,7 +713,7 @@ helm upgrade --install localstack localstack/localstack -n $NS \
 
 The script is template — write only the `helm upgrade --install` lines for services that Phase 1b actually detected. Don't install kafka/rabbitmq/elasticsearch helm charts blindly; only when detected. For Kafka, prefer `bitnami/kafka` in KRaft mode. For Loki/Tempo, use `grafana/loki` and `grafana/tempo` (or `grafana/loki-stack` which bundles them).
 
-Apply order in dep-charts.dev.sh: stateful infra first (mysql/postgres/mongo), then queues (kafka/rabbitmq), then mocks (localstack/mailhog), then observability (prometheus/grafana/loki/tempo). All with `--wait`.
+Apply order in dep-charts.dev.sh: stateful infra first (mysql/postgres/mongo), then queues (kafka/rabbitmq), then mocks (localstack/mailhog), then observability (prometheus/grafana/loki/tempo). All commands run fast and return immediately — readiness is enforced by `make wait-deps` separately.
 
 ### 6e. Generate `.localcraft/k8s/Makefile.dev` for k8s ops
 
@@ -714,16 +721,29 @@ Apply order in dep-charts.dev.sh: stateful infra first (mysql/postgres/mongo), t
 NS := localcraft-dev
 APP := {REPO_NAME}
 
-.PHONY: k8s-up k8s-down deps app port-forward logs helm-template clean help
+.PHONY: k8s-up k8s-down deps wait-deps app port-forward logs helm-template clean help status
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS=":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
-deps:           ## install mock dep charts into the cluster
+deps:           ## install mock dep charts (returns fast; doesn't wait for ready)
 	bash dep-charts.dev.sh
 
+# Emit ONE wait-deps line per service actually picked in Phase 6d.
+# Use kubectl rollout status for Deployments (redis-master, localstack)
+# and kubectl wait for StatefulSets (mysql, postgres, mongodb).
+# Generous timeouts — first install can take 10+ min on cold image pull.
+wait-deps:      ## block until all installed dep pods are Ready
+	@echo "waiting for mock dependencies to become ready..."
+	kubectl rollout status statefulset/mysql        -n $(NS) --timeout=15m
+	kubectl rollout status statefulset/mongodb      -n $(NS) --timeout=10m
+	kubectl rollout status statefulset/redis-master -n $(NS) --timeout=10m || \
+	  kubectl rollout status deployment/redis-master -n $(NS) --timeout=10m
+	kubectl rollout status deployment/localstack    -n $(NS) --timeout=10m
+	@echo "all dep services Ready."
+
 app: configmap secret  ## install the app helm chart with values.dev.yaml
-	helm upgrade --install $(APP) ./chart -n $(NS) -f values.dev.yaml --wait
+	helm upgrade --install $(APP) ./chart -n $(NS) -f values.dev.yaml
 
 configmap:      ## apply the dev configmap
 	kubectl apply -n $(NS) -f configmap.dev.yaml
@@ -731,11 +751,18 @@ configmap:      ## apply the dev configmap
 secret:         ## apply the dev secret
 	kubectl apply -n $(NS) -f secret.dev.yaml
 
-k8s-up: deps app  ## bring up dependencies + app
+k8s-up: deps wait-deps app  ## install deps → wait for deps Ready → install app
+	@echo ""
+	@echo "Stack is up. Smoke test:"
+	@echo "  make -f Makefile.dev port-forward   # in another shell"
+	@echo "  curl http://localhost:8000/"
 
 k8s-down:       ## remove the app release (deps stay)
 	helm uninstall $(APP) -n $(NS) || true
 	kubectl delete -n $(NS) -f configmap.dev.yaml -f secret.dev.yaml --ignore-not-found
+
+status:         ## show what's running in the namespace
+	@kubectl get pods,svc -n $(NS)
 
 port-forward:   ## forward the app service to localhost:8000
 	kubectl port-forward -n $(NS) svc/$(APP) 8000:{DETECTED_SERVICE_PORT}
@@ -749,6 +776,8 @@ helm-template:  ## render the chart locally for inspection (no apply)
 clean:          ## remove the entire namespace (deps + app + everything)
 	kubectl delete namespace $(NS) --ignore-not-found
 ```
+
+**`wait-deps` is per-repo dynamic** — emit only the lines for services actually installed in Phase 6d. Use `kubectl rollout status` so the command supports both Deployments and StatefulSets cleanly (`kubectl wait` works for pods but doesn't follow controller-level rollouts). For services that may be packaged as Deployment OR StatefulSet across chart versions (redis), use the `|| fallback` form shown above.
 
 ### 6f. Final EKS-mode print
 
