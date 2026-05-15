@@ -1,14 +1,7 @@
 # Reference Dockerfile.dev for Python / FastAPI services.
-# Pattern derived from production Dockerfiles in the source org, dev-flavored
-# (uvicorn --reload for hot-reload, multi-stage, non-root user, healthcheck).
-#
-# Placeholders:
-#   {PYTHON_VERSION}     e.g. 3.12
-#   {APP_NAME}           target repo dir name
-#   {APP_PORT}           detected port; default 8000
-#   {APP_MODULE}         python module path of the app (e.g. main:app, app.main:app)
-#   {EXTRA_APT_BUILD}    extra apt build deps (libpq-dev for psycopg2, etc.)
-#   {EXTRA_APT_RUNTIME}  extra apt runtime deps (libpq5, postgresql-client, etc.)
+# Dev-flavored: uvicorn --reload, multi-stage, non-root user, healthcheck.
+# Build context = repo root: cd .localcraft && docker build -f Dockerfile.dev ..
+# Placeholder list is documented in samples/docker/README.md.
 
 # ---- builder ----
 FROM python:{PYTHON_VERSION}-slim AS builder

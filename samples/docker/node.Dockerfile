@@ -1,13 +1,8 @@
 # Reference Dockerfile.dev for Node services (Express / Nest / Fastify / etc.).
-# Single-stage in dev mode (need source for hot-reload). For frontend builds
-# (React/Next/Vite static), use node-frontend.Dockerfile instead — that pattern
-# is multi-stage with nginx serving the build output.
-#
-# Placeholders:
-#   {NODE_VERSION}  e.g. 20
-#   {APP_NAME}      target repo dir name
-#   {APP_PORT}      detected port; default 3000
-#   {DEV_CMD}       detected dev command from package.json scripts (e.g. "npm run dev")
+# Single-stage in dev mode (need source for hot-reload). For frontend static
+# builds (React/Next/Vite), use node-frontend.Dockerfile (not yet bundled).
+# Build context = repo root: cd .localcraft && docker build -f Dockerfile.dev ..
+# Placeholder list is documented in samples/docker/README.md.
 
 FROM node:{NODE_VERSION}-alpine
 

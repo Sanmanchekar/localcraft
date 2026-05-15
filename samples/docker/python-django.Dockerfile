@@ -1,15 +1,7 @@
 # Reference Dockerfile.dev for Python / Django services.
-# Pattern derived from production Dockerfiles in the source org, dev-flavored
-# (uses runserver for hot-reload, single non-root user, multi-stage).
-#
-# Placeholders the skill substitutes when copying this into a target repo:
-#   {PYTHON_VERSION}     e.g. 3.11
-#   {APP_NAME}           target repo dir name
-#   {APP_PORT}           detected port; default 8000
-#   {EXTRA_APT_BUILD}    extra apt build deps (e.g. default-libmysqlclient-dev pkg-config)
-#   {EXTRA_APT_RUNTIME}  extra apt runtime deps (e.g. default-libmysqlclient-dev)
-#
+# Dev-flavored: runserver for hot-reload, single non-root user, multi-stage.
 # Build context = repo root: cd .localcraft && docker build -f Dockerfile.dev ..
+# Placeholder list is documented in samples/docker/README.md.
 
 # ---- builder ----
 FROM python:{PYTHON_VERSION}-slim AS builder

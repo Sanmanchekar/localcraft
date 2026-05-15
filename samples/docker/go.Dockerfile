@@ -1,12 +1,7 @@
 # Reference Dockerfile.dev for Go services.
-# Pattern derived from production Dockerfiles in the source org.
-# Multi-stage: golang builder → alpine runtime with non-root user + healthcheck.
-#
-# Placeholders:
-#   {GO_VERSION}      e.g. 1.22
-#   {APP_NAME}        target repo dir name
-#   {APP_PORT}        detected port; default 8080
-#   {ENTRYPOINT_PKG}  Go package path to build (e.g. ./cmd/server, ./cmd/<app>, .)
+# Multi-stage: golang builder → alpine runtime, non-root user, healthcheck.
+# Build context = repo root: cd .localcraft && docker build -f Dockerfile.dev ..
+# Placeholder list is documented in samples/docker/README.md.
 
 # ---- builder ----
 FROM golang:{GO_VERSION}-alpine AS builder
