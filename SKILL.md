@@ -371,7 +371,42 @@ Generate only if the target repo does NOT already have a `Dockerfile` at root. *
 | PHP | `composer.json` `require.php` | `8.3` |
 | Elixir | `.tool-versions` → `mix.exs` `elixir:` | `1.16` |
 
-Each Dockerfile.dev is **multi-stage** with a `builder` and `runtime` stage. Templates per stack (substitute `{VERSION}` from detection):
+**Template selection — prefer the curated sample over the inline fallback.**
+
+For each detected stack, look for a matching template in the skill's bundled library at `~/.claude/skills/localcraft/samples/docker/`. If found, copy that file to `<repo>/.localcraft/Dockerfile.dev` after substituting placeholders. If not found, fall back to the inline template shown later in this section.
+
+| Detected stack | Preferred sample (check first) | Placeholders to substitute |
+|---|---|---|
+| Python + Django (`manage.py` + django dep) | `python-django.Dockerfile` | `{PYTHON_VERSION}`, `{APP_PORT}`, `{EXTRA_APT_BUILD}`, `{EXTRA_APT_RUNTIME}` |
+| Python + FastAPI (fastapi dep, no `manage.py`) | `python-fastapi.Dockerfile` | `{PYTHON_VERSION}`, `{APP_PORT}`, `{APP_MODULE}`, `{EXTRA_APT_BUILD}`, `{EXTRA_APT_RUNTIME}` |
+| Go (`go.mod` present) | `go.Dockerfile` | `{GO_VERSION}`, `{APP_NAME}`, `{APP_PORT}`, `{ENTRYPOINT_PKG}` |
+| Node services (`package.json` with non-frontend deps) | `node.Dockerfile` | `{NODE_VERSION}`, `{APP_NAME}`, `{APP_PORT}`, `{DEV_CMD}` |
+
+**User overrides**: if `samples/docker/<stack>.user.Dockerfile` exists, prefer it over the bundled `<stack>.Dockerfile` (same convention as `samples/compose/<svc>.user.yml`). This is how an org swaps in their own base image, internal CA, audit log paths, etc.
+
+**How to fill the placeholders:**
+- `{PYTHON_VERSION}` / `{GO_VERSION}` / `{NODE_VERSION}` — from the version-detection chain in the table above
+- `{APP_NAME}` — repo dir name (e.g. `gqinstitute_backend`)
+- `{APP_PORT}` — detected port (see below) or per-language default (Python 8000, Go 8080, Node 3000)
+- `{APP_MODULE}` — for FastAPI: scan source for `FastAPI()` constructor location → emit `<module>:<varname>` (e.g. `main:app`, `app.main:app`); fall back to `main:app`
+- `{ENTRYPOINT_PKG}` — for Go: try `./cmd/<repo-name>` → `./cmd/server` → `./cmd/main` → `.`; first that exists wins
+- `{DEV_CMD}` — for Node: read `package.json.scripts.dev` → `scripts.start`; emit as JSON-array CMD form (e.g. `["npm", "run", "dev"]`); fall back to `["node", "index.js"]`
+- `{EXTRA_APT_BUILD}` / `{EXTRA_APT_RUNTIME}` — derived from detected Python C-extension deps:
+  | Detected dep | Add to `EXTRA_APT_BUILD` | Add to `EXTRA_APT_RUNTIME` |
+  |---|---|---|
+  | `mysqlclient` | `default-libmysqlclient-dev pkg-config` | `default-libmysqlclient-dev` |
+  | `psycopg2` (NOT `-binary`) | `libpq-dev` | `libpq5` |
+  | `cryptography` | `libssl-dev libffi-dev` | (none) |
+  | `lxml` | `libxml2-dev libxslt-dev` | `libxml2 libxslt1.1` |
+  | `pillow` | `libjpeg-dev zlib1g-dev` | `libjpeg62-turbo zlib1g` |
+  | `pycurl` | `libcurl4-openssl-dev libssl-dev` | `libcurl4` |
+  Combine with spaces. Empty if no native deps detected.
+
+**Use the inline template (below) only when** no sample file exists for the detected stack — currently always for Java/Spring, Ruby, Rust, .NET, PHP, Elixir; for Python/Node/Go it's the rare case of a missing sample file.
+
+---
+
+Inline fallback templates per stack (multi-stage where applicable, substitute `{VERSION}` from detection chain):
 
 ```dockerfile
 # Python (Django/Flask/FastAPI/generic)
