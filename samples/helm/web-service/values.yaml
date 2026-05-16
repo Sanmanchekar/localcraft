@@ -1,0 +1,144 @@
+############################# namespace #############################
+namespace:
+  name: default
+  create: false
+
+############################# deployment #############################
+replicaCount: 1
+nameOverride: ""
+fullnameOverride: "web-service"
+image:
+  repository: ""
+  tag: ""
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+resources:
+  requests:
+    cpu: "500m"
+    memory: "1536Mi"
+  limits:
+    cpu: "1000m"
+    memory: "2Gi"
+serviceAccount:
+  create: false
+  name: ""
+  annotations: {}
+rbac:
+  create: false
+  rules: []
+podAnnotations:
+  security.kubernetes.io/seccompProfile: "runtime/default"
+podLabels: {}
+containerPort: 8000
+probes:
+  path: /health
+  liveness:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+    successThreshold: 1
+  readiness:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+    successThreshold: 1
+  startup:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    failureThreshold: 30
+    timeoutSeconds: 2
+nodeSelector: {}
+tolerations: []
+extraVolumes:
+  - name: tmp
+    emptyDir: {}
+  - name: dshm
+    emptyDir:
+      medium: Memory
+      sizeLimit: "64Mi"
+extraVolumeMounts:
+  - name: tmp
+    mountPath: /tmp
+  - name: dshm
+    mountPath: /dev/shm
+
+############################# service #############################
+service:
+  type: ClusterIP
+  port: 8008
+  targetPort: 8000
+  annotations: {}
+  labels: {}
+
+############################# ingress #############################
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/group.name: <INGRESS_GROUP>
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}, {"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:<REGION>:<ACCOUNT_ID>:certificate/<CERTIFICATE_ID>
+  hosts:
+    - host: my-service.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+
+############################# configmap #############################
+configmap:
+  enabled: false
+
+############################# secret #############################
+secret:
+  enabled: false
+
+############################# External Secrets Configuration  #############################
+externalSecrets:
+  enabled: true
+  refreshInterval: "1m"
+  secretStoreName: "aws-secretsmanager"
+  secretStoreKind: "ClusterSecretStore"
+  awsSecretName: "web-service-secret"
+
+############################# hpa #############################
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 70
+
+############################# pdb #############################
+pdb:
+  enabled: true
+  minAvailable: 1
+
+############################# env #############################
+env: []
+envFromSecrets: []
+
+############################# metrics #############################
+metrics:
+  enabled: true
+  basicAuth:
+    enabled: true
+    username: "metrics_user"
+    password: ""  # Set via environment variable or secret
+  serviceMonitor:
+    enabled: true
+    namespace: ""  # Leave empty to use release namespace
+    interval: 30s
+    scrapeTimeout: 10s
+    labels:
+      prometheus: kube-prometheus  # Adjust based on your Prometheus selector
+    relabelings: []
+    metricRelabelings: []
+

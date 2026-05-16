@@ -1,0 +1,11 @@
+apiVersion: v2
+name: web-service
+description: >-
+  Production-ready Helm chart archetype for a stateless web service.
+  Bundles probes (liveness/readiness/startup), securityContext, HPA, PDB,
+  RBAC, Ingress with ALB annotations, ServiceMonitor for Prometheus,
+  and ExternalSecret for AWS Secrets Manager integration.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+kubeVersion: ">=1.24.0-0"

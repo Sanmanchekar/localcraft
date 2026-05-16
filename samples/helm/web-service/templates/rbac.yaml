@@ -1,0 +1,32 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "web-service.fullname" . }}
+  labels:
+    {{- include "web-service.labels" . | nindent 4 }}
+rules:
+  {{- if .Values.rbac.rules }}
+  {{- toYaml .Values.rbac.rules | nindent 2 }}
+  {{- else }}
+  # Default: no permissions; add to values.rbac.rules as needed.
+  - apiGroups: [""] # core
+    resources: []
+    verbs: []
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "web-service.fullname" . }}
+  labels:
+    {{- include "web-service.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "web-service.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "web-service.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

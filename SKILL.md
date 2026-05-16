@@ -646,9 +646,12 @@ The repo may not have `helm/` on the currently checked-out branch. Try in order:
 1. **Local `helm/` or `charts/` dir** in the current branch's working tree
 2. **Origin `feature/helm` branch** — fetch tree via `gh api repos/<owner>/<repo>/git/trees/feature/helm?recursive=1`
 3. **Origin `helm/production` branch** — same via `gh api .../tree/helm/production?recursive=1`
-4. **None found** → print a note in the summary that EKS mode needs a helm chart somewhere; do NOT fabricate one. Skip the rest of Phase 6.
+4. **Skill's bundled archetype** — copy `~/.claude/skills/localcraft/samples/helm/web-service/` into `.localcraft/k8s/chart/` and rewrite `Chart.yaml`'s `name:` to the target repo's name. Use this fallback when the repo is new, has no helm chart yet, OR when steps 1-3 returned an unusably small/template-only chart. Org overrides at `samples/helm/web-service.user/` win over the bundled default.
+5. **None found AND user opted out of the bundled archetype** → print a note in the summary that EKS mode needs a helm chart somewhere; do NOT fabricate one beyond the archetype. Skip the rest of Phase 6.
 
-When found via a remote branch, download just the `helm/` subtree (or `charts/`) into `.localcraft/k8s/chart/` via `gh api repos/.../tarball/<branch>` + `tar -xz --strip-components=1 --wildcards '*/helm/*' '*/helm'`.
+When found via a remote branch (step 2 or 3), download just the `helm/` subtree (or `charts/`) into `.localcraft/k8s/chart/` via `gh api repos/.../tarball/<branch>` + `tar -xz --strip-components=1 --wildcards '*/helm/*' '*/helm'`.
+
+When using the bundled archetype (step 4), also rename the `_helpers.tpl` define names if the chart was lifted under a different archetype name (e.g., copying `samples/helm/worker/` would mean `web-service.fullname` → `worker.fullname` throughout templates). The bundled `web-service` archetype already uses generic names so this rename is automatic when the Chart.yaml `name:` field changes.
 
 ### 6b. Generate `values.dev.yaml` — override production assumptions
 

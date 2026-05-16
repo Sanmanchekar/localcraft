@@ -1,0 +1,14 @@
+Thank you for installing {{ include "web-service.name" . }} 🎉
+
+To verify the deployment:
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/name={{ include "web-service.name" . }}
+
+Port-forward (if no ingress):
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "web-service.fullname" . }} 8080:{{ .Values.service.port }}
+
+Security highlights:
+- PSS restricted via optional Namespace labels
+- Default-deny NetworkPolicy (ingress), constrained egress with DNS only
+- Probes (liveness/readiness{{ if .Values.probes.startup.enabled }}, startup{{ end }}), resource requests/limits
+- PDB to maintain availability, optional HPA for elasticity
+- Token automount disabled, minimal RBAC disabled by default
