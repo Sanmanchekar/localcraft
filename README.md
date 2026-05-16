@@ -6,17 +6,41 @@ No binary, no install step beyond a symlink. The "detector" is Claude reading yo
 
 ## Install
 
+One-liner (clones + symlinks):
+
 ```sh
-git clone <this repo> ~/code/localcraft
-ln -s ~/code/localcraft ~/.claude/skills/localcraft
+git clone https://github.com/Sanmanchekar/localcraft ~/code/localcraft && \
+  mkdir -p ~/.claude/skills && \
+  ln -s ~/code/localcraft ~/.claude/skills/localcraft
 ```
 
 Open any repo in Claude Code and type `/localcraft`.
+
+## Update
+
+Pick one — both pull `origin/main` into your local clone and update the skill in place (no symlink rewiring, no Claude Code restart):
+
+```sh
+# (a) bundled update script — works anywhere
+bash ~/.claude/skills/localcraft/update.sh
+
+# (b) shell function — see "Optional shell function" below
+localcraft update
+
+# (c) raw git
+(cd "$(readlink ~/.claude/skills/localcraft)" && git pull)
+```
+
+After updating, regen any existing target-repo output with the new spec:
+```sh
+cd <your-repo> && claude -p "/localcraft refresh"
+```
 
 ## Use
 
 ```
 /localcraft                # detect + generate .localcraft/ + print run command
+/localcraft eks            # also generate EKS/Helm package under .localcraft/k8s/
 /localcraft detect         # print detected stack JSON; write nothing
 /localcraft refresh        # regenerate, overwriting existing .localcraft/
 /localcraft add metrics    # add prometheus+grafana to an existing setup
@@ -25,7 +49,32 @@ Open any repo in Claude Code and type `/localcraft`.
 Then in the target repo:
 
 ```sh
-cd .localcraft && docker compose -f docker-compose.local.yml --env-file .env.local up
+make -f .localcraft/Makefile.dev up         # compose stack
+make -f .localcraft/k8s/Makefile.dev k8s-up # EKS / k3s stack (after /localcraft eks)
+```
+
+## Optional shell function
+
+Drop in `~/.zshrc` or `~/.bashrc` for one-word invocation:
+
+```sh
+localcraft() {
+  if [ "$1" = "update" ]; then
+    bash "$HOME/.claude/skills/localcraft/update.sh"
+    return
+  fi
+  local dir="${1:-$PWD}"
+  shift 2>/dev/null
+  (cd "$dir" && claude -p "/localcraft $*")
+}
+```
+
+Then anywhere:
+```sh
+localcraft                            # run in current dir
+localcraft ~/code/some-repo           # run against a different repo
+localcraft . eks                      # run with eks mode
+localcraft update                     # pull latest skill
 ```
 
 ## Supported stacks
