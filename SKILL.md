@@ -410,6 +410,37 @@ For each detected stack, look for a matching template in the skill's bundled lib
 
 **Use the inline template (below) only when** no sample file exists for the detected stack — currently always for Java/Spring, Ruby, Rust, .NET, PHP, Elixir; for Python/Node/Go it's the rare case of a missing sample file.
 
+### Dockerfile.dev generation cautions
+
+When adapting a template to the target repo, several "obvious" additions backfire on real-world older codebases. Apply these rules:
+
+**1. Do NOT add `pip install --upgrade pip` blindly.** The base `python:VERSION-slim` image ships with a pip that's been stable-tested against the Python release. Upgrading to the newest pip breaks installations of older packages whose wheel metadata isn't strictly PEP 440 compliant (e.g., `celery==4.4.6` has `pytz (>dev)` which `pip ≥24.1` rejects). Default: don't upgrade pip. If the repo demonstrably needs a newer pip feature, pin it explicitly:
+
+| If requirements.txt has any of | Pin pip to |
+|---|---|
+| Packages from before mid-2021 (heuristic: any pin like `celery<5`, `numpy<1.20`, `pandas<1.3`, `Django<3.2`, `flask<2`) | `pip<24.1` |
+| `setup.py` with `python_requires<3.8` | `pip<22` |
+| None of the above (modern repo) | base image's bundled pip (no upgrade) |
+
+If you must upgrade: `RUN pip install 'pip<24.1'` (never bare `--upgrade pip`).
+
+**2. Do NOT pass secrets via `ENV` / `ARG`.** If the repo has private git dependencies (`git+ssh://...` or `git+https://...` referencing private repos in `requirements.txt`), use BuildKit secret mounts instead of an ENV-passed token — `ENV` bakes the value into image layers and triggers Docker's `SecretsUsedInArgOrEnv` warning. Pattern:
+
+```dockerfile
+# syntax=docker/dockerfile:1.4
+...
+RUN --mount=type=secret,id=github_token,env=GITHUB_TOKEN \
+    pip install --no-cache-dir -r requirements.txt
+```
+
+Build invocation then becomes `DOCKER_BUILDKIT=1 docker build --secret id=github_token,env=GITHUB_TOKEN ...`. Document this in the generated `Makefile.dev`'s `build-app` target.
+
+If the private deps are commented out in `requirements.txt` (e.g., `# git+ssh://...`), DO NOT add GITHUB_TOKEN scaffolding at all — the user marked them as optional. Just install whatever's uncommented.
+
+**3. Do NOT add `RUN apt-get clean` separately.** It's redundant; `rm -rf /var/lib/apt/lists/*` in the same RUN as the install is enough.
+
+**4. Detect Python version conflicts up front.** If `requirements.txt` pins `numpy<1.20` or `pandas<1.3` or `tensorflow<2.5`, the repo MUST run on Python ≤3.8 (those packages have no wheels for ≥3.9). The version-detection chain in the table above should respect this — but if neither `.python-version` nor `runtime.txt` exists, fall back to scanning requirements.txt for these "Python ≤3.8 hard limits" and pin `python:3.8-slim-bullseye` rather than the default `3.11`.
+
 ---
 
 Inline fallback templates per stack (multi-stage where applicable, substitute `{VERSION}` from detection chain):
