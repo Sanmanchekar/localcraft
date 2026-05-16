@@ -1,10 +1,40 @@
-# localcraft
+# 🛠️ localcraft
 
-A Claude Code skill that bootstraps a complete local dev setup for any repo: detects the stack, picks matching mock dependencies (Postgres / Redis / Kafka / LocalStack / Prometheus+Grafana / Mailhog / …), generates a working `docker-compose.local.yml` + `.env.local` with sample-secret values, and prints the run command.
+### Local Dev Environment Bootstrapper for Any Repo — Compose + EKS, Powered by Claude Code
 
-No binary, no install step beyond a symlink. The "detector" is Claude reading your repo via the skill instructions; the "synthesizer" is Claude stitching sample compose snippets from `samples/`.
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.11-brightgreen.svg)](https://github.com/Sanmanchekar/localcraft/releases)
+[![Claude Code](https://img.shields.io/badge/built%20for-Claude%20Code-orange.svg)](https://claude.ai/code)
+[![Languages](https://img.shields.io/badge/stacks-9%20supported-purple.svg)](#supported-stacks)
+[![GitHub Stars](https://img.shields.io/github/stars/Sanmanchekar/localcraft?style=social)](https://github.com/Sanmanchekar/localcraft)
 
-## Install
+**12 mock services · 4 Dockerfile templates · 1 production-shape Helm archetype.** Auto-detects your stack, generates a working local dev setup (`docker-compose` OR `helm`/`k3s`), and scrubs real-looking secrets before they land in your `.env`. One symlink to install, one slash command to run.
+
+[Quick Start](#-quick-start) · [Install](#-install) · [Update](#-update) · [Use](#-use) · [Modes](#-modes) · [Supported Stacks](#-supported-stacks) · [EKS / Rancher](#-eks--rancher-desktop) · [Extending](#-extending) · [Architecture](#-architecture)
+
+---
+
+## ⚡ Quick Start
+
+```sh
+# 1. install (one-liner)
+git clone https://github.com/Sanmanchekar/localcraft ~/code/localcraft && \
+  mkdir -p ~/.claude/skills && \
+  ln -s ~/code/localcraft ~/.claude/skills/localcraft
+
+# 2. in any repo
+cd ~/code/some-service
+claude -p "/localcraft"           # generates .localcraft/
+
+# 3. bring everything up
+make -f .localcraft/Makefile.dev up
+```
+
+That's the entire loop. The skill detects what you have (Python/Node/Go/Java/Ruby/…) and stitches the right mock services (MySQL, Redis, MongoDB, Kafka, LocalStack, Prometheus+Grafana, Loki, Tempo, Mailhog, …) into a runnable `docker-compose.dev.yml` with a generated `Makefile.dev`, `Dockerfile.dev`, scrubbed `.env.dev`, and a one-page `README.dev.md`.
+
+---
+
+## 📦 Install
 
 One-liner (clones + symlinks):
 
@@ -14,29 +44,38 @@ git clone https://github.com/Sanmanchekar/localcraft ~/code/localcraft && \
   ln -s ~/code/localcraft ~/.claude/skills/localcraft
 ```
 
-Open any repo in Claude Code and type `/localcraft`.
+Verify:
+```sh
+test -f ~/.claude/skills/localcraft/SKILL.md && echo "installed OK"
+```
 
-## Update
+Then open any repo in Claude Code and type `/localcraft`.
 
-Pick one — both pull `origin/main` into your local clone and update the skill in place (no symlink rewiring, no Claude Code restart):
+---
+
+## 🔄 Update
+
+Pick one — all three pull `origin/main` into your local clone, no symlink rewiring or Claude Code restart needed:
 
 ```sh
 # (a) bundled update script — works anywhere
 bash ~/.claude/skills/localcraft/update.sh
 
-# (b) shell function — see "Optional shell function" below
+# (b) shell function — see Optional Shell Function below
 localcraft update
 
 # (c) raw git
 (cd "$(readlink ~/.claude/skills/localcraft)" && git pull)
 ```
 
-After updating, regen any existing target-repo output with the new spec:
+After updating, regen target-repo output with the new spec:
 ```sh
 cd <your-repo> && claude -p "/localcraft refresh"
 ```
 
-## Use
+---
+
+## 🚀 Use
 
 ```
 /localcraft                # detect + generate .localcraft/ + print run command
@@ -46,14 +85,58 @@ cd <your-repo> && claude -p "/localcraft refresh"
 /localcraft add metrics    # add prometheus+grafana to an existing setup
 ```
 
-Then in the target repo:
+In the target repo after generation:
 
 ```sh
-make -f .localcraft/Makefile.dev up         # compose stack
-make -f .localcraft/k8s/Makefile.dev k8s-up # EKS / k3s stack (after /localcraft eks)
+make -f .localcraft/Makefile.dev help        # see all targets
+make -f .localcraft/Makefile.dev up          # docker compose stack
+make -f .localcraft/k8s/Makefile.dev k8s-up  # k3s/EKS stack (after /localcraft eks)
 ```
 
-## Optional shell function
+---
+
+## 🎛️ Modes
+
+| Mode | Trigger | Output |
+|---|---|---|
+| **Compose** (default) | `/localcraft` | `.localcraft/docker-compose.dev.yml`, `.env.dev`, `Dockerfile.dev`, `Makefile.dev`, `README.dev.md` |
+| **EKS / Helm** | `/localcraft eks` (or `k8s`, `kubernetes`, `rancher`, `helm`) | All of compose mode **+** `.localcraft/k8s/chart/`, `values.dev.yaml`, `configmap.dev.yaml`, `secret.dev.yaml`, `dep-charts.dev.sh`, `Makefile.dev` |
+| **Detect-only** | `/localcraft detect` | Stack JSON printed to stdout, no files written |
+| **Refresh** | `/localcraft refresh` (or `regenerate`, `force`) | Overwrites existing `.localcraft/` without asking |
+| **Add metrics** | `/localcraft add metrics` | Appends prometheus+grafana to an existing `docker-compose.dev.yml` |
+
+---
+
+## 🧱 Supported Stacks
+
+| Languages (9) | Frameworks auto-detected | Mock services (12) |
+|---|---|---|
+| Python, Node/TS, Go, Java/Kotlin, Ruby, Rust, .NET, PHP, Elixir | Django, Flask, FastAPI, Celery, Express, NestJS, Next, Fastify, Gin, Echo, Fiber, Chi, Spring Boot, Rails, Laravel, Phoenix, … | MySQL, Postgres, Redis, MongoDB, Elasticsearch, Kafka (Redpanda), RabbitMQ, LocalStack (AWS), Prometheus+Grafana, Loki, Tempo, Mailhog |
+
+Migration tools auto-detected: Alembic, Django ORM, Rails, Prisma, Flyway, Liquibase, golang-migrate, goose, Knex, Sequelize, TypeORM, MikroORM, raw SQL.
+
+The full detection logic lives in `SKILL.md` — that file IS the skill.
+
+---
+
+## ☸️ EKS / Rancher Desktop
+
+`/localcraft eks` produces a Kubernetes deployment package that mirrors a production EKS shape but runs on any local cluster (Rancher Desktop, kind, minikube, docker-desktop). It refuses to run if your kube context looks like a real cluster (`arn:aws:eks:`, contains `prod`/`staging`).
+
+```sh
+cd .localcraft/k8s
+make -f Makefile.dev k8s-up        # deps → wait-deps → app
+make -f Makefile.dev status        # kubectl get pods,svc -n localcraft-dev
+make -f Makefile.dev port-forward  # localhost:8000
+make -f Makefile.dev logs          # tail
+make -f Makefile.dev clean         # nuke the namespace
+```
+
+`dep-charts.dev.sh` installs Bitnami MySQL/Postgres/MongoDB/Redis + LocalStack (+ kube-prometheus-stack if metrics detected). `values.dev.yaml` overrides production-only knobs (ExternalSecret, HPA, PDB, ServiceMonitor) for local. `secret.dev.yaml` + `configmap.dev.yaml` replace the AWS Secrets Manager → External Secrets Operator pattern with hand-built k8s Secret/ConfigMap from your `.env.dev`.
+
+---
+
+## 🧰 Optional Shell Function
 
 Drop in `~/.zshrc` or `~/.bashrc` for one-word invocation:
 
@@ -71,43 +154,108 @@ localcraft() {
 
 Then anywhere:
 ```sh
-localcraft                            # run in current dir
-localcraft ~/code/some-repo           # run against a different repo
-localcraft . eks                      # run with eks mode
-localcraft update                     # pull latest skill
+localcraft                          # run in current dir
+localcraft ~/code/some-repo         # run against a different repo
+localcraft . eks                    # eks mode in current dir
+localcraft update                   # pull latest
 ```
 
-## Supported stacks
+---
 
-Detection covers manifests for Python, Node/TS, Go, Java/Kotlin, Ruby, Rust, .NET, PHP, Elixir, and their major frameworks (Django, Flask, FastAPI, Express, NestJS, Next, Spring Boot, Rails, Laravel, Phoenix, …). It maps known driver/SDK packages to mock services: Postgres, MySQL, Redis, MongoDB, Elasticsearch, Kafka, RabbitMQ, AWS (via LocalStack), Prometheus metrics, Mailhog SMTP.
+## 🔌 Extending
 
-The full mapping lives in `SKILL.md` — that file IS the skill.
-
-## Extending
-
-Add a new mock service:
-
-1. Drop `samples/compose/<service>.yml` (one service per file, self-contained — no env vars from outside the file).
-2. Add the row to the service-detection table in `SKILL.md` (which dep names map to this service, per language).
+**Add a new mock service:**
+1. Drop `samples/compose/<service>.yml` (one service per file, self-contained).
+2. Add a row to the service-detection table in `SKILL.md` (which dep names map to it, per language).
 3. Add env-var hints to the value table in `SKILL.md` if the service introduces conventional env names.
 
-Override a default for your org:
+**Override a bundled default for your org:**
 
-- Create `samples/compose/<service>.user.yml` — it takes precedence over `<service>.yml` whenever that service is detected. Useful for swapping in an image with seeds baked in, custom ports, or extra sidecars.
+Same `.user.*` convention across all three sample libraries — the skill picks `.user.*` over the default whenever it exists:
 
-Drop in reference Helm charts or Dockerfiles:
+```
+samples/compose/<service>.user.yml        # custom compose snippet
+samples/docker/<stack>.user.Dockerfile    # custom Dockerfile template
+samples/helm/<archetype>.user/            # custom helm chart archetype dir
+```
 
-- `samples/helm/<archetype>/` — full chart skeleton (`Chart.yaml`, `values.yaml`, `templates/`)
-- `samples/docker/<stack>.Dockerfile` — production-ready multi-stage build per stack
+Useful for: golden base images, internal CA certs, image-with-seed-baked-in for tests, internal package mirrors, audit log paths, etc. Keep your `.user.*` overrides out of any public fork.
 
-See the README in each directory for the expected layout.
+**Reference Helm chart archetypes** — bundled `samples/helm/web-service/` is a full production-shape chart (Deployment + Service + Ingress + HPA + PDB + RBAC + ExternalSecret + ServiceMonitor). Used as fallback when the target repo has no chart on `feature/helm` or `helm/production` branches.
 
-## Files
+**Reference Dockerfiles** — bundled `samples/docker/{python-django,python-fastapi,go,node}.Dockerfile` with placeholder substitution (`{PYTHON_VERSION}`, `{APP_PORT}`, `{APP_MODULE}`, `{EXTRA_APT_BUILD}`/`{EXTRA_APT_RUNTIME}` derived from C-extension deps).
+
+---
+
+## 🏗️ Architecture
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  Claude Code session in <target repo>                          │
+│  User types /localcraft                                        │
+└────────────────────┬───────────────────────────────────────────┘
+                     │
+                     ▼
+        ┌────────────────────────┐
+        │ ~/.claude/skills/      │  ← symlink to your clone
+        │  localcraft/SKILL.md   │     of this repo
+        └────────────┬───────────┘
+                     │ Claude reads SKILL.md and follows it
+                     ▼
+┌────────────────────────────────────────────────────────────────┐
+│  Phase 1 — Detect                                              │
+│    • language(s) from manifests                                │
+│    • framework + service drivers from deps                     │
+│    • env vars from .env*.example + framework config + grep     │
+│    • migration tool + Dockerfile + helm presence               │
+│                                                                │
+│  Phase 2 — Pick samples from ~/.claude/skills/localcraft/      │
+│    samples/compose/<service>.yml (or .user.yml)                │
+│                                                                │
+│  Phase 3 — Merge into one docker-compose.dev.yml               │
+│  Phase 3b — Add migration init service if Dockerfile + tool    │
+│  Phase 4 — Scrub real-looking secrets, generate .env.dev       │
+│  Phase 5 — Write Dockerfile.dev + Makefile.dev + README.dev.md │
+│  Phase 6 — (EKS mode only) Generate .localcraft/k8s/           │
+└────────────────────────────────────────────────────────────────┘
+                     │
+                     ▼
+        ┌────────────────────────┐
+        │  <target repo>/        │
+        │   .localcraft/         │  ← isolated dir, .gitignore'd
+        │   ├── docker-compose…  │
+        │   ├── .env.dev         │
+        │   ├── Dockerfile.dev   │
+        │   ├── Makefile.dev     │
+        │   ├── README.dev.md    │
+        │   └── k8s/             │  ← only with /localcraft eks
+        └────────────────────────┘
+```
+
+Hard rules baked in: never modify the target repo's existing files (only appends one line to `.gitignore`); never invent env var names (mirrors what the repo actually declares); never `docker compose up` or `helm install` on the user's behalf (prints the command); never target a real cluster in EKS mode (refuses contexts matching `arn:aws:eks:` or names containing `prod`/`staging`).
+
+---
+
+## 📁 Files
 
 ```
 SKILL.md                          # the entire detector + synthesizer (Claude reads this)
-samples/compose/*.yml             # one service per file; merged into docker-compose.local.yml
-samples/env/*.env                 # reference env files per framework
-samples/helm/                     # drop reference charts here
-samples/docker/                   # drop reference Dockerfiles here
+update.sh                         # one-command updater (bash ~/.claude/skills/localcraft/update.sh)
+samples/
+  compose/*.yml                   # 12 mock service snippets — one per file
+  env/*.env                       # reference env files per framework (fallback if no .env.example)
+  docker/*.Dockerfile             # 4 dev-flavored reference Dockerfiles (python-django/fastapi, go, node)
+  helm/web-service/               # production-shape Helm chart archetype
 ```
+
+---
+
+## 📜 License
+
+MIT — see [LICENSE](LICENSE).
+
+## 🤝 Contributing
+
+Issues and PRs welcome. The skill spec lives in `SKILL.md` (Markdown, not code). Adding a new mock service or stack typically means: drop a sample file + add one row to a detection table. See [Extending](#-extending) above.
+
+Built with [Claude Code](https://claude.ai/code).
