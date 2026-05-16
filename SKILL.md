@@ -276,7 +276,13 @@ Treat `.env*.example` files as references for the **shape** of variables, not as
   | 5432 | `postgres` |
   | 5672 | `rabbitmq` |
 - **Real-looking hostnames** (applied third — DROP the `://` requirement): if the value contains `.amazonaws.com`, `.azure.com`, `.gcp.io`, `.cloud.com`, `.internal`, or any FQDN with ≥ 3 dot-separated segments (and isn't `localhost` / `127.0.0.1` / `0.0.0.0` / a Docker-network service name from this skill's samples) → replace with the matching local mock hostname based on key name (`*_HOST` ending → `mysql`/`postgres`/`mongodb` per detected DB; `*_URL` ending → `http://localhost`). For outbound third-party URLs (`https://...`) where no local mock applies, leave value and prepend a `# TODO: real-looking URL` comment line.
-- **Long random-looking secrets** (catches the common case of committed real passwords): value length ≥ 16 AND **(a)** contains a mix of letters + digits + at least one symbol, OR **(b)** is 32/40/64 hex characters (HMAC-shaped signing secrets, SHA-1/SHA-256 digests), OR **(c)** is 24+ char base64 (`[A-Za-z0-9+/=]{24,}`). Replace with `dev-<keyname-lower>`.
+- **Long random-looking secrets** (catches the common case of committed real passwords): value length ≥ 16 AND value contains NO URL-like characters (`/`, `:`, `@`) AND ANY of:
+  - **(a)** mix of letters + digits + at least one symbol, OR
+  - **(b)** 32/40/64 hex characters (HMAC-shaped signing secrets, SHA-1/SHA-256 digests), OR
+  - **(c)** 24+ char base64 (`[A-Za-z0-9+/=]{24,}`), OR
+  - **(d)** alphanumeric-only with both letters AND digits (catches random-character passwords like `aGqKHQVbxgYSj1zUIc1` that have no symbols but are clearly not English words).
+
+  Replace with `dev-<keyname-lower>`. Excluding URL chars prevents false-positives on hostnames and paths (those are handled by the FQDN/URL rules above, which run first).
 - **Real-looking IPs**: any value matching an IPv4 pattern that isn't `127.0.0.1`, `0.0.0.0`, or a private range (10.x, 172.16–31.x, 192.168.x) → replace.
 - **Known token shapes**: `xox[bp]-...` (Slack bot/user token), `xoxs-...` (Slack signing), `sk-...` (Stripe/OpenAI), `ghp_...` (GitHub PAT), `eyJ...` (JWT), `AKIA...` / `ASIA...` (AWS access keys), `arn:aws:...` (AWS ARNs), `SG\.[A-Za-z0-9._-]+` (SendGrid), `rzp_(live|test)_...` (Razorpay), `whsec_...` (Stripe webhook), `pk_(live|test)_...` (publishable Stripe keys) → replace with placeholder.
 
